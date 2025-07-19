@@ -6,6 +6,14 @@
 
 char **format_args(char *line, int *argc_ptr)
 {
+    char *line_copy = strdup(line);
+    if (line_copy == NULL)
+    {
+        perror("strdup failed");
+        return NULL;
+    }
+    char *line_ptr = line_copy;
+
     int size = 64;
     char **argv;
     char *token;
@@ -14,11 +22,12 @@ char **format_args(char *line, int *argc_ptr)
     if (argv == NULL)
     {
         perror("malloc failed");
+        free(line_copy);
         return NULL;
     }
 
     int count = 0;
-    while ((token = strsep(&line, " ")) != NULL)
+    while ((token = strsep(&line_ptr, " ")) != NULL)
     {
         if (strlen(token) == 0)
         {
@@ -33,11 +42,12 @@ char **format_args(char *line, int *argc_ptr)
             {
                 perror("realloc failed");
                 free(argv);
+                free(line_copy);
                 return NULL;
             }
             argv = new_argv;
         }
-        argv[count] = token;
+        argv[count] = strdup(token);
         count++;
     }
 
@@ -45,7 +55,21 @@ char **format_args(char *line, int *argc_ptr)
 
     *argc_ptr = count;
 
+    free(line_copy);
     return argv;
+}
+
+void free_argv(char **argv)
+{
+    if (argv == NULL)
+    {
+        return;
+    }
+    for (int i = 0; argv[i] != NULL; i++)
+    {
+        free(argv[i]);
+    }
+    free(argv);
 }
 
 void change_directory(char *argv[])
@@ -84,49 +108,32 @@ void redirect(char *argv[], int argc)
 
 void process_line(char *line, char ***paths_ptr)
 {
-    int result;
-    char *program;
-
     char **argv;
     int argc;
     argv = format_args(line, &argc);
 
-    if (strcmp(argv[0], "exit") == 0)
+    // Handle redirection (this modifies argv and sets up file redirection)
+    redirect(argv, argc);
+
+    char program1[100];
+    char program2[100];
+    sprintf(program1, "%s%s", (*paths_ptr)[0], argv[0]);
+    sprintf(program2, "%s%s", (*paths_ptr)[1], argv[0]);
+
+    if (access(program1, X_OK) != -1)
     {
-        exit(0);
+        execv(program1, argv);
     }
-    else if (strcmp(argv[0], "cd") == 0)
+    else if (access(program2, X_OK) != -1)
     {
-        change_directory(argv);
-    }
-    else if (strcmp(argv[0], "path") == 0)
-    {
-        *paths_ptr = &argv[1];
+        execv(program2, argv);
     }
     else
     {
-
-        // Handle redirection (this modifies argv and sets up file redirection)
-        redirect(argv, argc);
-
-        char program1[100];
-        char program2[100];
-        sprintf(program1, "%s%s", (*paths_ptr)[0], argv[0]);
-        sprintf(program2, "%s%s", (*paths_ptr)[1], argv[0]);
-
-        if (access(program1, X_OK) != -1)
-        {
-            execv(program1, argv);
-        }
-        else if (access(program2, X_OK) != -1)
-        {
-            execv(program2, argv);
-        }
-        else
-        {
-            printf("Program not found: %s\n", argv[0]);
-        }
+        printf("Program not found: %s\n", argv[0]);
     }
+
+    free_argv(argv);
     exit(0);
 }
 
@@ -193,8 +200,31 @@ int main(int argc, char *argv[])
         int count = 0;
         char **tokens = get_tokens(line, &count);
 
+        char **argv;
+        int argc;
+        argv = format_args(line, &argc);
+
+        int start = 0;
+        if (argc > 0)
+        {
+            if (strcmp(argv[0], "exit") == 0)
+            {
+                exit(0);
+            }
+            else if (strcmp(argv[0], "cd") == 0)
+            {
+                change_directory(argv);
+                start++;
+            }
+            else if (strcmp(argv[0], "path") == 0)
+            {
+                paths_ptr = &argv[1];
+                start++;
+            }
+        }
+
         // Process each command separated by &
-        for (int i = 0; i < count; i++)
+        for (int i = start; i < count; i++)
         {
             int rc = fork();
 
@@ -216,6 +246,14 @@ int main(int argc, char *argv[])
             wait(NULL);
         }
 
+        if (argc > 0 && strcmp(argv[0], "path") != 0)
+        {
+            free_argv(argv);
+        }
+        else if (argc == 0)
+        {
+            free(argv);
+        }
         free(tokens);
     }
     free(line);
