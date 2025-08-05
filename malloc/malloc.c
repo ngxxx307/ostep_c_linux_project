@@ -18,13 +18,14 @@ typedef struct block_header
 #define MAX_ORDER 20                    // Largest block size: 2^20 = 1MB
 #define NUM_FREE_LISTS (MAX_ORDER - MIN_ORDER + 1)
 
-#define DEBUG = false
+#define DEBUG false
 
 static block_header_t *free_lists[NUM_FREE_LISTS];
 static bool is_initialized = false;
 static void *memory_pool_start = NULL;
 
 /**
+ * AI generaeted test function
  * @brief Recursively prints the details of each block in a single free list.
  *
  * @param block The current block in the list to print.
@@ -125,8 +126,6 @@ int unregister_freelist(block_header_t *block) // Remove node from free list
     }
     // Normal case
     prev->next = curr->next;
-
-    // Set block to be not free
     block->next = NULL;
     return 0;
 }
@@ -158,18 +157,32 @@ block_header_t *split(block_header_t *block)
     return buddy;
 }
 
+block_header_t *coalesce(block_header_t *block1, block_header_t *block2)
+{
+    if (!block1->is_free || !block2->is_free)
+        return NULL;
+    unregister_freelist(block2);
+
+    block_header_t *coalesce_block = (block1 < block2) ? block1 : block2;
+
+    coalesce_block->order++;
+    coalesce_block->is_free = true;
+
+    return coalesce_block;
+}
+
 void *my_malloc(size_t size)
 {
     // Initilization
     if (!is_initialized)
     {
-        block_header_t *head = mmap(NULL, TOTAL_MEMORY_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+        block_header_t *head = mmap(NULL, TOTAL_MEMORY_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0); // Assume OS always return page aligned
         int n_free_list = TOTAL_MEMORY_SIZE / MIN_ORDER;
 
-        if (head == MAP_FAILED) // Use MAP_FAILED for better portability and readability
+        if (head == MAP_FAILED)
         {
             perror("error in mmap");
-            return NULL; // Return NULL on failure
+            return NULL;
         }
         head->order = MAX_ORDER;
         head->next = NULL;
@@ -181,22 +194,30 @@ void *my_malloc(size_t size)
 
     int order = get_order(size + sizeof(block_header_t));
 
-    printf("Order %d \n", order);
+    if (order > MAX_ORDER)
+    {
+        return NULL;
+    }
+
+    if (DEBUG)
+        printf("Order %d \n", order);
     block_header_t *block = NULL;
 
     if (free_lists[order - MIN_ORDER] != NULL)
     { // Normal Case
-        printf("Debug: free list available\n");
+        if (DEBUG)
+            printf("Debug: free list available\n");
         block = free_lists[order - MIN_ORDER];
         unregister_freelist(block);
 
         block->is_free = false;
-        return block;
+        return block + 1; // Return address that is after block header
     }
 
     if (free_lists[order - MIN_ORDER] == NULL) // Case free list not available
     {
-        printf("Debug: free list not available\n");
+        if (DEBUG)
+            printf("Debug: free list not available\n");
         int i = order - MIN_ORDER;
 
         while (i < NUM_FREE_LISTS && free_lists[i] == NULL)
@@ -206,7 +227,8 @@ void *my_malloc(size_t size)
 
         if (i >= NUM_FREE_LISTS)
         {
-            printf("cannot find block\n");
+            if (DEBUG)
+                printf("cannot find block\n");
             return NULL;
         }
 
@@ -221,13 +243,40 @@ void *my_malloc(size_t size)
         block->is_free = false;
         block->next = NULL;
 
-        return block;
+        return block + 1; // Return address that is after block header
     }
     return NULL;
 }
 
+// since block and its buddy is only one bit off (e.g. order 4 1000 and 0000)
+// We can use XOR(1000, 2^4) to get the buddy 0000
+block_header_t *get_buddy(block_header_t *block)
+{
+    size_t block_size = 1 << block->order;
+    uintptr_t block_addr = (uintptr_t)block;
+    uintptr_t buddy_addr = block_addr ^ block_size;
+    block_header_t *buddy = (block_header_t *)buddy_addr;
+    return buddy;
+}
+
 void my_free(void *ptr)
 {
+    block_header_t *block = (block_header_t *)ptr - 1;
+    block_header_t *buddy = get_buddy(block);
+
+    block->is_free = true;
+
+    while (buddy->is_free && block->order != MAX_ORDER)
+    {
+        block = coalesce(block, buddy);
+        if (block == NULL)
+        {
+            fprintf(stderr, "error freeing memory");
+            return;
+        }
+        buddy = get_buddy(block);
+    }
+    register_freelist(block);
 }
 
 int main(int argc, char *argv[])
@@ -238,7 +287,7 @@ int main(int argc, char *argv[])
 
     // Request memory
     printf("Allocating 100 bytes...\n");
-    void *p1 = my_malloc(1024);
+    void *p1 = my_malloc(1024 * 4);
     if (p1)
     {
         printf("Successfully allocated 100 bytes at %p\n", p1);
@@ -247,13 +296,9 @@ int main(int argc, char *argv[])
     {
         printf("Failed to allocate 100 bytes.\n");
     }
+    my_free(p1);
 
     print_all_free_lists();
-
-    // The my_free function is not yet implemented.
-    // my_free(p1);
-    // my_free(p2);
-    // my_free(p3);
 
     return 0;
 }
